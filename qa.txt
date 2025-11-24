@@ -1,0 +1,3 @@
+Q: Explain the IMO's carriage requirements for AIS on cargo ships exceeding 300 gross tonnage engaged in international voyages.
+A: All vessels over 300 GT must carry an AIS transceiver displaying vessel information including name, position, speed, course, and identification number.
+
