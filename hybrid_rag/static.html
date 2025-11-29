@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Hybrid RAG ChatBot</title>
+  <style>
+    body { font-family: Arial, sans-serif; max-width: 800px; margin: auto; padding: 20px; background-color: #f7f7f7; }
+    h1 { color: #0077cc; text-align: center; }
+    #chat-container {
+        border: 1px solid #ddd; 
+        border-radius: 8px; 
+        background-color: white; 
+        margin-bottom: 15px;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+    }
+    #chat { padding: 15px; height: 400px; overflow-y: scroll; }
+    .msg { margin: 10px 0; padding: 8px; border-radius: 5px; max-width: 80%; }
+    .user { background-color: #e6f7ff; color: #0077cc; margin-left: auto; text-align: right; }
+    .bot { background-color: #ffe6e6; color: #cc0000; margin-right: auto; }
+    .input-group { display: flex; }
+    #question { flex-grow: 1; padding: 10px; border: 1px solid #ccc; border-radius: 5px 0 0 5px; }
+    button { 
+        padding: 10px 20px; 
+        background-color: #0077cc; 
+        color: white; 
+        border: none; 
+        border-radius: 0 5px 5px 0; 
+        cursor: pointer;
+        transition: background-color 0.2s;
+    }
+    button:hover { background-color: #005fa3; }
+  </style>
+</head>
+<body>
+  <h1>Hybrid RAG ChatBot</h1>
+  <div id="chat-container">
+    <div id="chat"></div>
+  </div>
+  <div class="input-group">
+    <input type="text" id="question" placeholder="Ask a question about Polar Code...">
+    <button onclick="sendMessage()">Ask</button>
+  </div>
+
+  <script>
+    async function sendMessage() {
+      const q = document.getElementById("question").value;
+      if (!q) return;
+
+      const chat = document.getElementById("chat");
+      const url = "http://127.0.0.1:8000/ask";
+
+      chat.innerHTML += `<div class="msg user">You: ${q}</div>`;
+      document.getElementById("question").value = "";
+      chat.scrollTop = chat.scrollHeight;
+
+      const loadingMsg = document.createElement('div');
+      loadingMsg.classList.add('msg', 'bot');
+      loadingMsg.innerHTML = 'Bot: Thinking...';
+      chat.appendChild(loadingMsg);
+      chat.scrollTop = chat.scrollHeight;
+
+      try {
+        const res = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ question: q })
+        });
+        
+        if (!res.ok) {
+            throw new Error(`HTTP error! status: ${res.status}`);
+        }
+
+        const data = await res.json();
+        
+        chat.removeChild(loadingMsg);
+
+        let botResponse = `Bot: ${data.answer}`;
+        
+        if (data.context_chunks && data.context_chunks.length > 0) {
+            const sources = data.context_chunks.map((c, i) => 
+                `[Source ${i+1}: ${c.source}, Page ${c.page}, Score: ${c.score}]`
+            ).join('<br>');
+            botResponse += `<hr style="border: none; border-top: 1px solid #ccc; margin: 5px 0;">Sources Used:<br><small>${sources}</small>`;
+        }
+
+        chat.innerHTML += `<div class="msg bot">${botResponse}</div>`;
+        
+      } catch (e) {
+        if(chat.contains(loadingMsg)) {
+             chat.removeChild(loadingMsg);
+        }
+        chat.innerHTML += `<div class="msg bot">Bot Error: Could not connect to the server or process the response. Is the server running? (${e.message})</div>`;
+      }
+      
+      chat.scrollTop = chat.scrollHeight;
+    }
+
+    document.getElementById('question').addEventListener('keypress', function(e) {
+        if (e.key === 'Enter') {
+            sendMessage();
+        }
+    });
+  </script>
+</body>
+</html>
