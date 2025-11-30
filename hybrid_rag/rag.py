@@ -176,7 +176,7 @@ async def ask_endpoint(query: Query):
     if not embeddings or not collection or not reranker or not bm25_index:
         return {"answer": "System components are still loading or failed to initialize.", "runtime_sec": 0.0, "cached": False}
 
-    if query.question in query_cache:
+    if query.question in query_cache and not conversation_history:
         answer = query_cache[query.question]
         runtime = time.time() - start_time
         return {"answer": answer, "runtime_sec": runtime, "cached": True}
@@ -186,13 +186,21 @@ async def ask_endpoint(query: Query):
     
     if is_chitchat:
         mode = "chitchat"
-        answer = await run_in_threadpool(ask_phi3_local, query.question, final_chunks, mode)
-        query_cache[query.question] = answer
+        # FIX 1: Pass history to the chitchat mode
+        answer = await run_in_threadpool(ask_phi3_local, query.question, final_chunks, mode, conversation_history=conversation_history)
         
     else:
         mode = "rag"
+        augmented_query = query.question
+        
+        if conversation_history:
+            history_context_str = " ".join([f"{msg['role']}: {msg['content']}" for msg in conversation_history])
+            augmented_query = f"{history_context_str} USER: {query.question}"
+            if len(augmented_query) > 512:
+                augmented_query = augmented_query[-512:]
+        
         try:
-            query_embedding = await run_in_threadpool(embeddings.embed_query, query.question)
+            query_embedding = await run_in_threadpool(embeddings.embed_query, augmented_query)
             
             results_dense = await run_in_threadpool(
                 collection.query,
@@ -205,7 +213,7 @@ async def ask_endpoint(query: Query):
             for doc_id, c, m in zip(results_dense["ids"][0], results_dense["documents"][0], results_dense["metadatas"][0]):
                 all_candidates[doc_id] = {"content": c, "metadata": m}
             
-            tokenized_query = query.question.split(" ")
+            tokenized_query = augmented_query.split(" ")
             bm25_scores = bm25_index.get_scores(tokenized_query)
             
             top_bm25_indices = np.argsort(bm25_scores)[::-1][:TOP_K_INITIAL_RETRIEVAL]
@@ -218,7 +226,8 @@ async def ask_endpoint(query: Query):
             
             candidate_list = list(all_candidates.values())
             
-            pairs = [[query.question, chunk['content']] for chunk in candidate_list]
+            # FIX 2: Use the augmented_query for RERANKING
+            pairs = [[augmented_query, chunk['content']] for chunk in candidate_list]
             
             scores = await run_in_threadpool(reranker.predict, pairs)
             
@@ -228,7 +237,8 @@ async def ask_endpoint(query: Query):
             candidate_list.sort(key=lambda x: x['score'], reverse=True)
             final_chunks = candidate_list[:TOP_K_FINAL]
 
-            answer = await run_in_threadpool(ask_phi3_local, query.question, final_chunks, mode, conversation_history=conversation_history)
+            # FIX 3: Use the augmented_query as the question for LLM prompt
+            answer = await run_in_threadpool(ask_phi3_local, augmented_query, final_chunks, mode, conversation_history=conversation_history)
         
         except Exception as e:
             answer = f"A critical error occurred during retrieval or processing: {e}"
@@ -247,4 +257,4 @@ async def ask_endpoint(query: Query):
         "context_chunks": [
             {"content": c['content'], "source": c['metadata'].get('source', 'unknown'), "page": c['metadata'].get('page', 'n/a'), "score": f"{c['score']:.4f}"} for c in final_chunks
         ]
-    }   
+    }
