@@ -3,7 +3,6 @@ from pydantic import BaseModel
 from fastapi.responses import HTMLResponse 
 from pathlib import Path
 from starlette.concurrency import run_in_threadpool
-
 import chromadb
 from langchain_huggingface import HuggingFaceEmbeddings
 import httpx 
@@ -12,7 +11,6 @@ import numpy as np
 from rank_bm25 import BM25Okapi 
 from sentence_transformers.cross_encoder import CrossEncoder
 from typing import List, Dict, Any, Union
-
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline 
 
@@ -44,6 +42,9 @@ embeddings = None
 query_cache: Dict[str, Any] = {}
 bm25_index: Union[BM25Okapi, None] = None
 bm25_document_map: Dict[str, Any] = {} 
+
+
+conversation_history: List[Dict[str, str]] = []
 
 @app.on_event("startup")
 async def startup_event():
@@ -109,7 +110,7 @@ async def serve_static_html():
         html_content = f.read()
     return HTMLResponse(content=html_content)
 
-def ask_phi3_local(query: str, chunks: List[Dict[str, Any]], mode: str = "rag") -> str:
+def ask_phi3_local(query: str, chunks: List[Dict[str, Any]], mode: str = "rag", conversation_history: List[Dict[str, str]] = None) -> str:
     if not model_pipeline:
         return "Error: Language model not loaded."
     
@@ -133,10 +134,15 @@ def ask_phi3_local(query: str, chunks: List[Dict[str, Any]], mode: str = "rag") 
         user_query = f"Context:\n{context}\n\nQuestion: {query}\nAnswer:"
 
     messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": user_query}
+        {"role": "system", "content": system_prompt}
     ]
     
+    if conversation_history is not None:
+        for msg in conversation_history:
+            messages.append(msg)
+
+    messages.append({"role": "user", "content": user_query})
+
     prompt = model_pipeline.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
 
     try:
@@ -158,19 +164,24 @@ def ask_phi3_local(query: str, chunks: List[Dict[str, Any]], mode: str = "rag") 
 
 @app.post("/ask")
 async def ask_endpoint(query: Query):
+    global conversation_history
     start_time = time.time()
     answer = "Error: Internal server processing failed before completion."
     final_chunks = []
     mode = "rag"
+
+    if len(conversation_history) > 10:
+        conversation_history = []
+
+    if not embeddings or not collection or not reranker or not bm25_index:
+        return {"answer": "System components are still loading or failed to initialize.", "runtime_sec": 0.0, "cached": False}
 
     if query.question in query_cache:
         answer = query_cache[query.question]
         runtime = time.time() - start_time
         return {"answer": answer, "runtime_sec": runtime, "cached": True}
     
-    if not embeddings or not collection or not reranker or not bm25_index:
-        return {"answer": "System components are still loading or failed to initialize.", "runtime_sec": 0.0, "cached": False}
-
+    current_user_message = {"role": "user", "content": query.question}
     is_chitchat = len(query.question.split()) <= 4
     
     if is_chitchat:
@@ -217,16 +228,17 @@ async def ask_endpoint(query: Query):
             candidate_list.sort(key=lambda x: x['score'], reverse=True)
             final_chunks = candidate_list[:TOP_K_FINAL]
 
-            answer = await run_in_threadpool(ask_phi3_local, query.question, final_chunks, mode)
+            answer = await run_in_threadpool(ask_phi3_local, query.question, final_chunks, mode, conversation_history=conversation_history)
         
-            query_cache[query.question] = answer
-
         except Exception as e:
             answer = f"A critical error occurred during retrieval or processing: {e}"
             print(f"Critical Error: {e}")
             
     end_time = time.time()
     runtime = end_time - start_time
+
+    conversation_history.append(current_user_message)
+    conversation_history.append({"role": "assistant", "content": answer})
 
     return {
         "answer": answer,
